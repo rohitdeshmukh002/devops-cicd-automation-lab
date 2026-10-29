@@ -1,0 +1,132 @@
+---
+- name: Install and Configure Jenkins on Ubuntu
+  hosts: jenkins
+  become: true
+
+  vars:
+    jenkins_port: 8080
+    jenkins_admin_user: admin
+    jenkins_admin_password: Admin@123
+    java_home: /usr/lib/jvm/java-21-openjdk-amd64
+
+  tasks:
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      apt:
+        name:
+          - git
+          - wget
+          - curl
+          - unzip
+          - fontconfig
+          - openjdk-21-jdk
+        state: present
+
+    - name: Create APT keyring directory
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Download Jenkins GPG key
+      get_url:
+        url: https://pkg.jenkins.io/debian-stable/jenkins.io-2026.key
+        dest: /etc/apt/keyrings/jenkins-keyring.asc
+        mode: '0644'
+
+    - name: Add Jenkins repository
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/"
+        state: present
+        filename: jenkins
+
+    - name: Update apt and install Jenkins
+      apt:
+        update_cache: yes
+        name: jenkins
+        state: present
+
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+
+    - name: Start and enable Docker service
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add ubuntu user and jenkins user to docker group
+      user:
+        name: "{{ item }}"
+        groups: docker
+        append: yes
+      loop:
+        - ubuntu
+        - jenkins
+
+    - name: Create Jenkins JVM options override directory
+      file:
+        path: /etc/systemd/system/jenkins.service.d
+        state: directory
+
+    - name: Configure Jenkins to bypass setup wizard
+      copy:
+        dest: /etc/systemd/system/jenkins.service.d/override.conf
+        content: |
+          [Service]
+          Environment="JAVA_HOME={{ java_home }}"
+          Environment="JENKINS_JAVA_OPTIONS=-Djenkins.install.runSetupWizard=false"
+
+    - name: Create init.groovy.d directory
+      file:
+        path: /var/lib/jenkins/init.groovy.d
+        state: directory
+        owner: jenkins
+        group: jenkins
+        mode: '0755'
+
+    - name: Create automated admin user script
+      copy:
+        dest: /var/lib/jenkins/init.groovy.d/basic-security.groovy
+        owner: jenkins
+        group: jenkins
+        mode: '0644'
+        content: |
+          import jenkins.model.Jenkins
+          import hudson.security.*
+
+          def instance = Jenkins.get()
+
+          def realm = new HudsonPrivateSecurityRealm(false)
+          realm.createAccount("{{ jenkins_admin_user }}","{{ jenkins_admin_password }}")
+          instance.setSecurityRealm(realm)
+
+          def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
+          strategy.setAllowAnonymousRead(false)
+          instance.setAuthorizationStrategy(strategy)
+
+          instance.save()
+
+    - name: Reload systemd and start Jenkins
+      systemd:
+        daemon_reload: yes
+        name: jenkins
+        state: restarted
+        enabled: yes
+
+    - name: Wait for Jenkins to start
+      wait_for:
+        port: "{{ jenkins_port }}"
+        delay: 15
+        timeout: 300
+
+    - name: Jenkins Access Info
+      debug:
+        msg: "Jenkins is ready at http://{{ ansible_host }}:8080 | Username: {{ jenkins_admin_user }} | Password: {{ jenkins_admin_password }}"
